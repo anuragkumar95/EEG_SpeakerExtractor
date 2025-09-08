@@ -1,8 +1,8 @@
 """
 Author: Anurag Kumar
-Created on: 2023-11-15 12:00:00
+Created on: 2025-09-07
 """
-
+import math
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -35,7 +35,6 @@ class RotaryEmbedding(nn.Module):
         x2 = x[..., self.dim//2:]
         return torch.cat((-x2, x1), dim=-1)
 
-# --- Usage within an Attention Layer (Conceptual) ---
 class MultiHeadAttentionWithRoPE(nn.Module):
     def __init__(self, embed_dim, num_heads):
         super().__init__()
