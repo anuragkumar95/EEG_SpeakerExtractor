@@ -1,3 +1,8 @@
+"""
+Author: Anurag Kumar
+Created on: 2023-11-15 12:00:00
+"""
+
 from tqdm import tqdm
 import os
 import numpy as np
@@ -6,7 +11,6 @@ import pandas as pd
 import argparse
 from mat4py import loadmat
 
-       
 def main(ARGS):
     #root = "/fs/scratch/PAS2301/kumar1109/KUL-Mix"
     NUM_SUBJECTS = 16
