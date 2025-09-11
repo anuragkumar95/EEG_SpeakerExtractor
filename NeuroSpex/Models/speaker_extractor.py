@@ -2,9 +2,11 @@
 Author: Anurag Kumar
 Created on: 2025-09-07
 """
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Parts of this code are taken from https://github.com/JusperLee/Conv-TasNet/blob/master/Conv_TasNet_Pytorch/Conv_TasNet.py
 
 class GlobalLayerNorm(nn.Module):
     '''
@@ -103,6 +105,30 @@ class Conv1D(nn.Conv1d):
             x = torch.squeeze(x)
         return x
 
+
+class ConvTrans1D(nn.ConvTranspose1d):
+    '''
+       This module can be seen as the gradient of Conv1d with respect to its input. 
+       It is also known as a fractionally-strided convolution 
+       or a deconvolution (although it is not an actual deconvolution operation).
+    '''
+
+    def __init__(self, *args, **kwargs):
+        super(ConvTrans1D, self).__init__(*args, **kwargs)
+
+    def forward(self, x, squeeze=False):
+        """
+        x: N x L or N x C x L
+        """
+        if x.dim() not in [2, 3]:
+            raise RuntimeError("{} accept 2/3D tensor as input".format(
+                self.__name__))
+        x = super().forward(x if x.dim() == 3 else torch.unsqueeze(x, 1))
+        if squeeze:
+            x = torch.squeeze(x)
+        return x
+
+
 class Conv1D_Block(nn.Module):
     '''
        Consider only residual links
@@ -166,8 +192,9 @@ def Sequential_repeat(num_repeats, num_blocks, **block_kwargs):
           num_blocks, **block_kwargs) for i in range(num_repeats)]
       return nn.Sequential(*repeats_lists)
 
+
 class CrossAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, query_ch=64, out_dim=64):
+    def __init__(self, embed_dim, num_heads):
         super().__init__()
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
         
@@ -181,7 +208,7 @@ class CrossAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
 
         # Final linear layer to combine head outputs
-        self.out_proj = nn.Linear(query_ch, out_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, query, key, value, mask=None):
         """
@@ -224,44 +251,49 @@ class CrossAttention(nn.Module):
         
         # 7. Concatenate heads and project back
         # Reshape context to [B, T_q, embed_dim]
-        context = context.transpose(1, 2).contiguous().view(B, T_q, E).permute(0, 2, 1)
-        output = self.out_proj(context).permute(0, 2, 1)
+        context = context.transpose(1, 2).contiguous().view(B, T_q, E)
+        output = self.out_proj(context)
 
         return output, attention_weights
 
+        
 class CrossAttnTCNBlock(nn.Module):
-    def __init__(self, in_channels, q_channels, num_heads=1, causal=False):
+    def __init__(self, in_channels, n_ca_heads=1, n_tcn_layers=3, n_tcn_depth=8, tcn_kernel_size=3, causal=False):
         super(CrossAttnTCNBlock, self).__init__()
-        self.cross_attn = CrossAttention(embed_dim=3200, num_heads=num_heads, query_ch=q_channels, out_dim=in_channels)
+        self.cross_attn = CrossAttention(embed_dim=in_channels, num_heads=n_ca_heads)
         self.tcn = Sequential_repeat(
-            num_repeats=1, 
-            num_blocks=8, 
+            num_repeats=n_tcn_layers, 
+            num_blocks=n_tcn_depth, 
             in_channels=in_channels, 
             out_channels=in_channels, 
-            kernel_size=3, 
+            kernel_size=tcn_kernel_size, 
             norm="gln", 
             causal=causal)
     
     def forward(self, speech_emb, eeg_emb):
         """
-        speech_emb : (batch, T_x, 256)
+        speech_emb : (batch, T_x, 64)
         eeg_emb : (batch, T_x, 64), interpolated.
         """
-        speech_emb = speech_emb.permute(0, 2, 1)
-        eeg_emb = eeg_emb.permute(0, 2, 1)
         attn_out, attn_w = self.cross_attn(query=eeg_emb, key=speech_emb, value=speech_emb)
         attn_out = speech_emb + attn_out
-        tcn_out = self.tcn(attn_out)
+        tcn_out = self.tcn(attn_out.permute(0, 2, 1))
         return tcn_out
 
 class SpeakerExtractor(nn.Module):
-    def __init__(self, eeg_ch, speech_ch, num_ca_blocks=4, causal=False):
+    def __init__(self, eeg_ch, speech_ch, n_ca_blocks=4, n_ca_heads=1, n_tcn_layers=3, n_tcn_depth=8, tcn_kernel_size=3, causal=False):
         super(SpeakerExtractor, self).__init__()
         self.layer_norm = nn.LayerNorm(speech_ch)
-        self.conv1 = nn.Conv1d(speech_ch, speech_ch, kernel_size=1, stride=1, padding=0)
-        self.conv_out = nn.Conv1d(speech_ch, speech_ch, kernel_size=1, stride=1, padding=0)
+        self.conv1 = nn.Conv1d(speech_ch, eeg_ch, kernel_size=1, stride=1, padding=0)
+        self.conv_out = nn.Conv1d(eeg_ch, speech_ch, kernel_size=1, stride=1, padding=0)
         self.ca_blocks = nn.ModuleList([
-            CrossAttnTCNBlock(in_channels=speech_ch, q_channels=eeg_ch, num_heads=1, causal=causal) for _ in range(num_ca_blocks)
+            CrossAttnTCNBlock(
+                in_channels=eeg_ch, 
+                n_ca_heads=n_ca_heads, 
+                n_tcn_layers=n_tcn_layers,
+                n_tcn_depth=n_tcn_depth,
+                tcn_kernel_size=tcn_kernel_size,
+                causal=causal) for _ in range(n_ca_blocks)
         ])
 
     def interpolate(self, embedding, tgt_seq_len):
@@ -278,8 +310,6 @@ class SpeakerExtractor(nn.Module):
             align_corners=False # Set to False for non-boundary-aligned interpolation
         )
 
-        # Swap the dimensions back to the original format
-        #interpolated_embedding = interpolated_embedding.transpose(1, 2)  # Shape becomes: (1, 20, 512)
         return interpolated_embedding
 
     def forward(self, speech_emb, eeg_emb):
@@ -287,6 +317,9 @@ class SpeakerExtractor(nn.Module):
         speech_emb : (batch, T_x, 256)
         eeg_emb : (batch, T_y, 64).
         """
+        assert speech_emb.shape[-1] == 256, f"Speech EMB:{speech_emb.shape}"
+        assert eeg_emb.shape[-1] == 64, f"Speech EMB:{eeg_emb.shape}"
+
         speech_emb = self.layer_norm(speech_emb).permute(0, 2, 1)
         speech_emb = self.conv1(speech_emb)
        
@@ -296,7 +329,7 @@ class SpeakerExtractor(nn.Module):
         #Convert both embeddings in shape (B , seq_len , channels)
         speech_emb = speech_emb.permute(0, 2, 1)
         eeg_emb = eeg_emb.permute(0, 2, 1)
-
+        
         for ca_block in self.ca_blocks:
             attn_out = ca_block(speech_emb, eeg_emb)
             speech_emb = attn_out.permute(0, 2, 1)

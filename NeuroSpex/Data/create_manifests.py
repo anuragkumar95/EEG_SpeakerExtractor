@@ -163,7 +163,7 @@ for t_id in tqdm(train_t_id):
     
     win_len = WIN_DUR * EEG_SR
     hop_len = HOP_DUR * EEG_SR
-    for t_st in range(0, eeg.shape[0], hop_len):
+    for t_st in range(0, eeg.shape[0]-win_len, hop_len):
         t_en = t_st + win_len
         train_dict['subject'].append(f"S{subj}")
         train_dict['trial'].append(int(trial))

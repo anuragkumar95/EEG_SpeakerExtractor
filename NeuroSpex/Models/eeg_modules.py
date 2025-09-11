@@ -2,6 +2,7 @@
 Author: Anurag Kumar
 Created on: 2025-09-07
 """
+import torch
 import math
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +37,7 @@ class RotaryEmbedding(nn.Module):
         return torch.cat((-x2, x1), dim=-1)
 
 class MultiHeadAttentionWithRoPE(nn.Module):
-    def __init__(self, embed_dim, num_heads):
+    def __init__(self, embed_dim, num_heads, apply_rope=False):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = embed_dim
@@ -44,7 +45,9 @@ class MultiHeadAttentionWithRoPE(nn.Module):
         self.k_proj = nn.Linear(embed_dim, num_heads*embed_dim)
         self.v_proj = nn.Linear(embed_dim, num_heads*embed_dim)
         self.out_proj = nn.Linear(num_heads*embed_dim, embed_dim)
-        self.rope = RotaryEmbedding(self.head_dim, base=10000) # RoPE applied per head
+        self.rope = None
+        if apply_rope:
+            self.rope = RotaryEmbedding(self.head_dim, base=10000) # RoPE applied per head
 
     def forward(self, x, mask=None):
         batch_size, seq_len, _ = x.shape
@@ -59,15 +62,18 @@ class MultiHeadAttentionWithRoPE(nn.Module):
         k = k.view(batch_size, self.num_heads, seq_len, self.head_dim)
         v = v.view(batch_size, self.num_heads, seq_len, self.head_dim)
 
-        # Apply RoPE to queries and keys
-        q_rotated = self.rope(q, seq_len)
-        k_rotated = self.rope(k, seq_len)
+        q_rotated = q
+        k_rotated = k
+        if self.rope is not None:
+            # Apply RoPE to queries and keys
+            q_rotated = self.rope(q, seq_len)
+            k_rotated = self.rope(k, seq_len)
 
-        # Transpose for attention calculation (batch, num_heads, seq_len, head_dim)
-        q_rotated = q_rotated.transpose(1, 2)
-        k_rotated = k_rotated.transpose(1, 2)
-        v = v.transpose(1, 2)
-
+            # Transpose for attention calculation (batch, num_heads, seq_len, head_dim)
+            q_rotated = q_rotated.transpose(1, 2)
+            k_rotated = k_rotated.transpose(1, 2)
+            v = v.transpose(1, 2)
+        
         # Calculate attention scores (scaled dot-product attention)
         scores = torch.matmul(q_rotated, k_rotated.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
@@ -93,15 +99,16 @@ class PreConv(nn.Module):
         return outputs
 
 class ADCBlock(nn.Module):
-    def __init__(self, input_ch, num_heads, kernel_size=3):
+    def __init__(self, input_ch, num_heads, kernel_size=3, apply_rope=False):
         super(ADCBlock, self).__init__()
-        self.mha = MultiHeadAttentionWithRoPE(embed_dim=input_ch, num_heads=num_heads)
+        self.mha = MultiHeadAttentionWithRoPE(embed_dim=input_ch, num_heads=num_heads, apply_rope=apply_rope)
         self.depth_conv = nn.Conv1d(input_ch, input_ch, kernel_size=kernel_size, stride=1, padding='same', groups=input_ch)
         self.layer_norm = nn.LayerNorm(input_ch)
 
     def forward(self, x):
         # MHA step
         x = self.layer_norm(x + self.mha(x))
+   
         # Depth Conv step
         x = x.permute(0, 2, 1)  
         x = x + self.depth_conv(x)
@@ -109,12 +116,12 @@ class ADCBlock(nn.Module):
         return x
             
 class EEGEncoder(nn.Module):
-    def __init__(self, input_ch, num_heads=3, n_adcblocks=1):
+    def __init__(self, input_ch, num_heads=2, n_adcblocks=1, kernel_size=10, apply_rope=False):
         super(EEGEncoder, self).__init__()
-        self.pre_conv = PreConv(input_ch=input_ch, output_ch=input_ch, kernel_size=10)
+        self.pre_conv = PreConv(input_ch=input_ch, output_ch=input_ch, kernel_size=1)
         self.ADCBlocks = nn.ModuleList()
         for _ in range(n_adcblocks):
-            self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=10))
+            self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=kernel_size, apply_rope=apply_rope))
 
     def forward(self, x):
         x = self.pre_conv(x)

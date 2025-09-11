@@ -2,9 +2,48 @@
 Author: Anurag Kumar
 Created on: 2025-09-07
 """
-
+import math
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def overlap_and_add(signal, frame_step):
+    """Reconstructs a signal from a framed representation.
+    Adds potentially overlapping frames of a signal with shape
+    `[..., frames, frame_length]`, offsetting subsequent frames by `frame_step`.
+    The resulting tensor has shape `[..., output_size]` where
+        output_size = (frames - 1) * frame_step + frame_length
+    Args:
+        signal: A [..., frames, frame_length] Tensor. All dimensions may be unknown, and rank must be at least 2.
+        frame_step: An integer denoting overlap offsets. Must be less than or equal to frame_length.
+    Returns:
+        A Tensor with shape [..., output_size] containing the overlap-added frames of signal's inner-most two dimensions.
+        output_size = (frames - 1) * frame_step + frame_length
+    Based on https://github.com/tensorflow/tensorflow/blob/r1.12/tensorflow/contrib/signal/python/ops/reconstruction_ops.py
+    """
+    dev = signal.device
+
+    outer_dimensions = signal.size()[:-2]
+    frames, frame_length = signal.size()[-2:]
+
+    subframe_length = math.gcd(frame_length, frame_step)  # gcd=Greatest Common Divisor
+    subframe_step = frame_step // subframe_length
+    subframes_per_frame = frame_length // subframe_length
+    output_size = frame_step * (frames - 1) + frame_length
+    output_subframes = output_size // subframe_length
+
+    subframe_signal = signal.view(*outer_dimensions, -1, subframe_length)
+
+    frame = torch.arange(0, output_subframes).unfold(0, subframes_per_frame, subframe_step)
+    frame = signal.new_tensor(frame).long().to(dev)  # signal may in GPU or CPU
+    frame = frame.contiguous().view(-1)
+
+    result = signal.new_zeros(*outer_dimensions, output_subframes, subframe_length)
+    result.index_add_(-2, frame, subframe_signal)
+    result = result.view(*outer_dimensions, -1)
+    return result
+
 
 class SpeechEncoder(nn.Module):
     def __init__(self, input_ch, output_ch, kernel_size=3, stride=1, padding=0):
@@ -17,10 +56,11 @@ class SpeechEncoder(nn.Module):
         return outputs
 
 class SpeechDecoder(nn.Module):
-    def __init__(self, input_ch, output_ch, kernel_size=3, stride=1, padding=0):
+    def __init__(self, input_ch, frame_len=20, frame_hop=10):
         super(SpeechDecoder, self).__init__()
-        self.conv1d_transpose = nn.ConvTranspose1d(input_ch, output_ch, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.frame_hop = frame_hop
+        self.linear = nn.Linear(input_ch, frame_len)
     
     def forward(self, x):
-        outputs = F.relu(self.conv1d_transpose(x))
+        outputs = overlap_and_add(self.linear(x), self.frame_hop)
         return outputs

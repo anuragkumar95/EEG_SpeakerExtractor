@@ -1,0 +1,6 @@
+wandb/
+*.ipynb*
+slurm*
+__pycache__/
+*.pyc
+checkpoints/
