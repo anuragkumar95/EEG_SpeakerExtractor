@@ -7,37 +7,30 @@ import math
 import torch.nn as nn
 import torch.nn.functional as F
 
-class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, base=10000):
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
-        self.dim = dim
-        self.base = base
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer('inv_freq', inv_freq)
+        self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, x, seq_len):
-        # x shape: (batch_size, num_heads, seq_len, head_dim) or similar
-        # We need to create position-based angles
-        t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
-        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1) # Duplicate to match dimensions
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
-        # Apply rotation
-        # The rotation needs to be applied to pairs of dimensions
-        # For simplicity, this example shows applying it to the entire vector
-        # A proper implementation would split x into pairs and rotate each pair
-        # Example here assumes x is already structured for pairwise rotation or has same dim as emb
-        rotated_x = x * emb.cos() + self.rotate_half(x) * emb.sin()
-        return rotated_x
+    def forward(self, x):
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        x = x.permute(1, 0, 2).contiguous() # (batch, seq_len, embed_dim)
+        return self.dropout(x)
 
-    def rotate_half(self, x):
-        # Splits the vector into two halves and rotates the second half
-        x1 = x[..., :self.dim//2]
-        x2 = x[..., self.dim//2:]
-        return torch.cat((-x2, x1), dim=-1)
-
-class MultiHeadAttentionWithRoPE(nn.Module):
-    def __init__(self, embed_dim, num_heads, apply_rope=False):
+class MultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads=1):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = embed_dim
@@ -45,10 +38,7 @@ class MultiHeadAttentionWithRoPE(nn.Module):
         self.k_proj = nn.Linear(embed_dim, num_heads*embed_dim)
         self.v_proj = nn.Linear(embed_dim, num_heads*embed_dim)
         self.out_proj = nn.Linear(num_heads*embed_dim, embed_dim)
-        self.rope = None
-        if apply_rope:
-            self.rope = RotaryEmbedding(self.head_dim, base=10000) # RoPE applied per head
-
+        
     def forward(self, x, mask=None):
         batch_size, seq_len, _ = x.shape
 
@@ -61,21 +51,9 @@ class MultiHeadAttentionWithRoPE(nn.Module):
         q = q.view(batch_size, self.num_heads, seq_len, self.head_dim)
         k = k.view(batch_size, self.num_heads, seq_len, self.head_dim)
         v = v.view(batch_size, self.num_heads, seq_len, self.head_dim)
-
-        q_rotated = q
-        k_rotated = k
-        if self.rope is not None:
-            # Apply RoPE to queries and keys
-            q_rotated = self.rope(q, seq_len)
-            k_rotated = self.rope(k, seq_len)
-
-            # Transpose for attention calculation (batch, num_heads, seq_len, head_dim)
-            q_rotated = q_rotated.transpose(1, 2)
-            k_rotated = k_rotated.transpose(1, 2)
-            v = v.transpose(1, 2)
         
         # Calculate attention scores (scaled dot-product attention)
-        scores = torch.matmul(q_rotated, k_rotated.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9) # Apply attention mask
@@ -99,14 +77,16 @@ class PreConv(nn.Module):
         return outputs
 
 class ADCBlock(nn.Module):
-    def __init__(self, input_ch, num_heads, kernel_size=3, apply_rope=False):
+    def __init__(self, input_ch, num_heads=1, kernel_size=3):
         super(ADCBlock, self).__init__()
-        self.mha = MultiHeadAttentionWithRoPE(embed_dim=input_ch, num_heads=num_heads, apply_rope=apply_rope)
+        self.pos_enc = PositionalEncoding(d_model=input_ch)
+        self.mha = MultiHeadAttention(embed_dim=input_ch, num_heads=num_heads)
         self.depth_conv = nn.Conv1d(input_ch, input_ch, kernel_size=kernel_size, stride=1, padding='same', groups=input_ch)
         self.layer_norm = nn.LayerNorm(input_ch)
 
     def forward(self, x):
         # MHA step
+        x = self.pos_enc(x.permute(1, 0, 2))
         x = self.layer_norm(x + self.mha(x))
    
         # Depth Conv step
@@ -116,14 +96,15 @@ class ADCBlock(nn.Module):
         return x
             
 class EEGEncoder(nn.Module):
-    def __init__(self, input_ch, num_heads=2, n_adcblocks=1, kernel_size=10, apply_rope=False):
+    def __init__(self, input_ch, num_heads=2, n_adcblocks=1, kernel_size=10):
         super(EEGEncoder, self).__init__()
         self.pre_conv = PreConv(input_ch=input_ch, output_ch=input_ch, kernel_size=1)
         self.ADCBlocks = nn.ModuleList()
         for _ in range(n_adcblocks):
-            self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=kernel_size, apply_rope=apply_rope))
+            self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=kernel_size))
 
     def forward(self, x):
+
         x = self.pre_conv(x)
         for adc_block in self.ADCBlocks:
             x = adc_block(x)

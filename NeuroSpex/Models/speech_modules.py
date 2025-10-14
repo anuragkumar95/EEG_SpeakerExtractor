@@ -55,6 +55,23 @@ class SpeechEncoder(nn.Module):
         outputs = F.relu(self.conv1d(x))
         return outputs
 
+# class Encoder(nn.Module):
+#     def __init__(self, L, N):
+#         super(Encoder, self).__init__()
+#         self.L, self.N = L, N
+#         self.conv1d_U = nn.Conv1d(1, N, kernel_size=L, stride=L // 2, bias=False)
+
+#     def forward(self, mixture):
+#         """
+#         Args:
+#             mixture: [M, T], M is batch size, T is #samples
+#         Returns:
+#             mixture_w: [M, N, K], where K = (T-L)/(L/2)+1 = 2T/L-1
+#         """
+#         mixture = torch.unsqueeze(mixture, 1)  # [M, 1, T]
+#         mixture_w = F.relu(self.conv1d_U(mixture))  # [M, N, K]
+#         return mixture_w
+
 class SpeechDecoder(nn.Module):
     def __init__(self, input_ch, frame_len=20, frame_hop=10):
         super(SpeechDecoder, self).__init__()

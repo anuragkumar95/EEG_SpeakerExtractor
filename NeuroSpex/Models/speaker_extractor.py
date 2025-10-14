@@ -5,6 +5,7 @@ Created on: 2025-09-07
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .convtasnet_separator import Separator
 
 # Parts of this code are taken from https://github.com/JusperLee/Conv-TasNet/blob/master/Conv_TasNet_Pytorch/Conv_TasNet.py
 
@@ -256,19 +257,11 @@ class CrossAttention(nn.Module):
 
         return output, attention_weights
 
-        
-class CrossAttnTCNBlock(nn.Module):
-    def __init__(self, in_channels, n_ca_heads=1, n_tcn_layers=3, n_tcn_depth=8, tcn_kernel_size=3, causal=False):
-        super(CrossAttnTCNBlock, self).__init__()
+class CrossAttnBlock(nn.Module):
+    def __init__(self, in_channels, n_ca_heads=1):
+        super(CrossAttnBlock, self).__init__()
         self.cross_attn = CrossAttention(embed_dim=in_channels, num_heads=n_ca_heads)
-        self.tcn = Sequential_repeat(
-            num_repeats=n_tcn_layers, 
-            num_blocks=n_tcn_depth, 
-            in_channels=in_channels, 
-            out_channels=in_channels, 
-            kernel_size=tcn_kernel_size, 
-            norm="gln", 
-            causal=causal)
+        self.layer_norm = nn.LayerNorm(in_channels)
     
     def forward(self, speech_emb, eeg_emb):
         """
@@ -276,19 +269,53 @@ class CrossAttnTCNBlock(nn.Module):
         eeg_emb : (batch, T_x, 64), interpolated.
         """
         attn_out, attn_w = self.cross_attn(query=eeg_emb, key=speech_emb, value=speech_emb)
+        attn_out = self.layer_norm(eeg_emb + attn_out)
+        return attn_out, attn_w
+
+        
+class CrossAttnTCNBlock(nn.Module):
+    def __init__(self, in_channels, tcn_channels=512, n_ca_heads=1, n_tcn_layers=3, n_tcn_depth=8, tcn_kernel_size=3, causal=False):
+        super(CrossAttnTCNBlock, self).__init__()
+        self.cross_attn = CrossAttnBlock(in_channels=in_channels, n_ca_heads=n_ca_heads)
+        # self.tcn = Sequential_repeat(
+        #     num_repeats=n_tcn_layers, 
+        #     num_blocks=n_tcn_depth, 
+        #     in_channels=in_channels, 
+        #     out_channels=in_channels, 
+        #     kernel_size=tcn_kernel_size, 
+        #     norm="gln", 
+        #     causal=causal)
+        self.tcn = Separator( 
+            N=in_channels, 
+            B=in_channels, #Bottleneck channels
+            H=tcn_channels, 
+            P=tcn_kernel_size, 
+            X=n_tcn_depth, 
+            R=n_tcn_layers, 
+            causal=causal)
+   
+    
+    def forward(self, speech_emb, eeg_emb):
+        """
+        speech_emb : (batch, T_x, 64)
+        eeg_emb : (batch, T_x, 64), interpolated.
+        """
+        attn_out, attn_w = self.cross_attn(speech_emb, eeg_emb)
         attn_out = speech_emb + attn_out
         tcn_out = self.tcn(attn_out.permute(0, 2, 1))
         return tcn_out
 
 class SpeakerExtractor(nn.Module):
-    def __init__(self, eeg_ch, speech_ch, n_ca_blocks=4, n_ca_heads=1, n_tcn_layers=3, n_tcn_depth=8, tcn_kernel_size=3, causal=False):
+    def __init__(self, eeg_ch, speech_ch, n_ca_blocks=4, n_ca_heads=1, n_tcn_layers=3, n_tcn_depth=8, tcn_kernel_size=3, tcn_channels=512, causal=False):
         super(SpeakerExtractor, self).__init__()
         self.layer_norm = nn.LayerNorm(speech_ch)
+        #self.dropout = nn.Dropout(p=0.1)
         self.conv1 = nn.Conv1d(speech_ch, eeg_ch, kernel_size=1, stride=1, padding=0)
         self.conv_out = nn.Conv1d(eeg_ch, speech_ch, kernel_size=1, stride=1, padding=0)
         self.ca_blocks = nn.ModuleList([
             CrossAttnTCNBlock(
                 in_channels=eeg_ch, 
+                tcn_channels=tcn_channels,
                 n_ca_heads=n_ca_heads, 
                 n_tcn_layers=n_tcn_layers,
                 n_tcn_depth=n_tcn_depth,
@@ -325,15 +352,15 @@ class SpeakerExtractor(nn.Module):
        
         #Interpolate eeg embedding
         eeg_emb = self.interpolate(eeg_emb, speech_emb.shape[-1])
+        #eeg_emb = eeg.emb.permute(0, 2, 1) #Emulate interpolation shape change
 
         #Convert both embeddings in shape (B , seq_len , channels)
         speech_emb = speech_emb.permute(0, 2, 1)
         eeg_emb = eeg_emb.permute(0, 2, 1)
         
-        for ca_block in self.ca_blocks:
+        for k, ca_block in enumerate(self.ca_blocks):
             attn_out = ca_block(speech_emb, eeg_emb)
-            speech_emb = attn_out.permute(0, 2, 1)
+            eeg_emb = attn_out.permute(0, 2, 1)
 
-        final_attn_out = speech_emb 
-        mask = F.relu(self.conv_out(final_attn_out.permute(0, 2, 1)))
+        mask = F.relu(self.conv_out(eeg_emb.permute(0, 2, 1)))
         return mask.permute(0, 2, 1)

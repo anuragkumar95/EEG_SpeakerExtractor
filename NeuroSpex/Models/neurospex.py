@@ -8,6 +8,7 @@ import torch.nn as nn
 from .eeg_modules import EEGEncoder
 from .speech_modules import SpeechEncoder, SpeechDecoder
 from .speaker_extractor import SpeakerExtractor
+#from .convtasnet import Separator
 
 
 class NeuroSpex(nn.Module):
@@ -22,6 +23,7 @@ class NeuroSpex(nn.Module):
         self.speech_encoder = SpeechEncoder( **speech_encoder_params )
         self.speech_decoder = SpeechDecoder( **speech_decoder_params )
         self.speaker_extractor = SpeakerExtractor( **spk_ext_params )
+   
 
     def forward(self, speech, eeg):
         """
@@ -30,7 +32,7 @@ class NeuroSpex(nn.Module):
         """
         # Encode
         eeg_emb = self.eeg_encoder(eeg)
-        speech_emb = self.speech_encoder(speech).permute(0, 2, 1)
+        speech_emb = self.speech_encoder(speech).permute(0, 2, 1).contiguous()
         
         # Get speaker mask
         mask = self.speaker_extractor(speech_emb, eeg_emb)
