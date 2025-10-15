@@ -27,10 +27,10 @@ class Separator(nn.Module):
             self.layer_norm = cLN(N)
         else:
             self.layer_norm = ChannelWiseLayerNorm(N)
-        self.bottleneck_conv1x1 = nn.Conv1d(N, B, 1)
+        #self.bottleneck_conv1x1 = nn.Conv1d(N, B, 1)
 
         self.tcn = _clones(TCN_block(X,P,B,H,causal), R)
-        self.mask_conv1x1 = nn.Conv1d(B, N, 1)
+        #self.mask_conv1x1 = nn.Conv1d(B, N, 1)
 
 
     def forward(self, x):

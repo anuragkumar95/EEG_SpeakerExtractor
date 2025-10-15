@@ -255,7 +255,7 @@ class CrossAttention(nn.Module):
         context = context.transpose(1, 2).contiguous().view(B, T_q, E)
         output = self.out_proj(context)
 
-        return output, attention_weights
+        return output#, attention_weights
 
 class CrossAttnBlock(nn.Module):
     def __init__(self, in_channels, n_ca_heads=1):
@@ -268,9 +268,10 @@ class CrossAttnBlock(nn.Module):
         speech_emb : (batch, T_x, 64)
         eeg_emb : (batch, T_x, 64), interpolated.
         """
-        attn_out, attn_w = self.cross_attn(query=eeg_emb, key=speech_emb, value=speech_emb)
+        #attn_out, attn_w = self.cross_attn(query=eeg_emb, key=speech_emb, value=speech_emb)
+        attn_out = self.cross_attn(query=eeg_emb, key=speech_emb, value=speech_emb)
         attn_out = self.layer_norm(eeg_emb + attn_out)
-        return attn_out, attn_w
+        return attn_out
 
         
 class CrossAttnTCNBlock(nn.Module):
@@ -300,7 +301,7 @@ class CrossAttnTCNBlock(nn.Module):
         speech_emb : (batch, T_x, 64)
         eeg_emb : (batch, T_x, 64), interpolated.
         """
-        attn_out, attn_w = self.cross_attn(speech_emb, eeg_emb)
+        attn_out = self.cross_attn(speech_emb, eeg_emb)
         attn_out = speech_emb + attn_out
         tcn_out = self.tcn(attn_out.permute(0, 2, 1))
         return tcn_out

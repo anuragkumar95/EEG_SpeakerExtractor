@@ -23,7 +23,7 @@ class NeurHeedEEG_Dataset(Dataset):
         #self.mix_lst_path = args.mix_lst_path
         self.mix_lst_path = f"{root}/mixture_data_list_2mix.csv"
         #self.audio_direc = args.audio_direc
-        self.audio_direc = f"{root}/stimuli/"
+        self.audio_direc = f"{root}/audio_8k/"
         #self.eeg_direc = args.reference_direc
         self.eeg_direc = f"{root}/eeg/"
         
@@ -42,8 +42,8 @@ class NeurHeedEEG_Dataset(Dataset):
         self.eeg_dict={}
         for subject in range(1,17):
             for trial in range(1,9):
-                #eeg_path = f'{self.eeg_direc}S{subject}Tra{trial}.npy'
-                eeg_path = f"{self.eeg_direc}S{subject}_{trial}.npy"
+                eeg_path = f'{self.eeg_direc}S{subject}Tra{trial}.npy'
+                #eeg_path = f"{self.eeg_direc}S{subject}_{trial}.npy"
                 eeg_data = np.load(eeg_path)
                 self.eeg_dict[(subject,trial)] = eeg_data
 

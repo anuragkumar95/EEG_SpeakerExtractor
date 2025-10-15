@@ -104,7 +104,6 @@ class EEGEncoder(nn.Module):
             self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=kernel_size))
 
     def forward(self, x):
-
         x = self.pre_conv(x)
         for adc_block in self.ADCBlocks:
             x = adc_block(x)

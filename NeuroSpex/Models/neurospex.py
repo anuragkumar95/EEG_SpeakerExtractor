@@ -32,7 +32,7 @@ class NeuroSpex(nn.Module):
         """
         # Encode
         eeg_emb = self.eeg_encoder(eeg)
-        speech_emb = self.speech_encoder(speech).permute(0, 2, 1).contiguous()
+        speech_emb = self.speech_encoder(speech).permute(0, 2, 1)
         
         # Get speaker mask
         mask = self.speaker_extractor(speech_emb, eeg_emb)

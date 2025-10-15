@@ -1,14 +1,14 @@
 {
     "train": {
-        "batch_size":16,
-        "accum_grad": 1,
+        "batch_size":8,
+        "accum_grad": 2,
         "epochs": 100,
         "init_lr": 0.0001,
         "experiment": "neurospex_baseline",
         "run_name": "neuroheed_split_baseline", 
         "save_dir": "./checkpoints",
         "resume_pt": null,
-        "gpu": 0,
+        "gpu":0,
         "val_every_step": 1000,
         "speech_encoder_params":{
             "input_ch":1,
@@ -19,7 +19,7 @@
         },
         "eeg_encoder_params":{
             "input_ch":64,
-            "num_heads":1,
+            "num_heads":2,
             "n_adcblocks":5
         },
         "speech_decoder_params":{
@@ -40,6 +40,6 @@
         }
     },
     "data": {
-        "root": "/fs/scratch/PAS2301/kumar1109/KUL-Mix"
+        "root": "/fs/scratch/PAS2301/kumar1109/KUL_eeg"
     }
 }

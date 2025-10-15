@@ -2,6 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+def custom_collate_fn(batch):
+    a_mix, a_tgt, ref_tgt = batch[0]
+    a_mix = torch.tensor(a_mix).unsqueeze(1)
+    a_tgt = torch.tensor(a_tgt).unsqueeze(1) 
+    ref_tgt = torch.tensor(ref_tgt).permute(0, 2, 1) 
+    return a_mix, a_tgt, ref_tgt
+
 # Implementation taken from https://github.com/csteinmetz1/auraloss/blob/main/auraloss/time.py
 class SISDRLoss(torch.nn.Module):
     """Scale-invariant signal-to-distortion ratio loss module.
