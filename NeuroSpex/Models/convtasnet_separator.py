@@ -9,6 +9,48 @@ def _clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
+class GlobalLayerNorm(nn.Module):
+    '''
+       Calculate Global Layer Normalization
+       dim: (int or list or torch.Size) –
+            input shape from an expected input of size
+       eps: a value added to the denominator for numerical stability.
+       elementwise_affine: a boolean value that when set to True, 
+           this module has learnable per-element affine parameters 
+           initialized to ones (for weights) and zeros (for biases).
+    '''
+
+    def __init__(self, dim, eps=1e-05, elementwise_affine=True):
+        super(GlobalLayerNorm, self).__init__()
+        self.dim = dim
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+
+        if self.elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(self.dim, 1))
+            self.bias = nn.Parameter(torch.zeros(self.dim, 1))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+    def forward(self, x):
+        # x = N x C x L
+        # N x 1 x 1
+        # cln: mean,var N x 1 x L
+        # gln: mean,var N x 1 x 1
+        if x.dim() != 3:
+            raise RuntimeError("{} accept 3D tensor as input".format(
+                self.__name__))
+
+        mean = torch.mean(x, (1, 2), keepdim=True)
+        var = torch.mean((x-mean)**2, (1, 2), keepdim=True)
+        # N x C x L
+        if self.elementwise_affine:
+            x = self.weight*(x-mean)/torch.sqrt(var+self.eps)+self.bias
+        else:
+            x = (x-mean)/torch.sqrt(var+self.eps)
+        return x
+
 class Separator(nn.Module):
     '''
        ConvTasNet module
@@ -20,31 +62,20 @@ class Separator(nn.Module):
        X	Number of convolutional blocks in each repeat
        R	Number of repeats
     '''
-    def __init__(self, N=64, B=64, H=512, P=3, X=8, R=3, causal=False):
+    def __init__(self, N=64, B=64, H=512, P=8, X=4, R=3, causal=False):
         super(Separator, self).__init__()
-
         if causal:
             self.layer_norm = cLN(N)
         else:
             self.layer_norm = ChannelWiseLayerNorm(N)
-        #self.bottleneck_conv1x1 = nn.Conv1d(N, B, 1)
-
+            #self.layer_norm = GlobalLayerNorm(N)
         self.tcn = _clones(TCN_block(X,P,B,H,causal), R)
-        #self.mask_conv1x1 = nn.Conv1d(B, N, 1)
-
-
+      
     def forward(self, x):
-       # K = x.size()[-1]
-
-        x = self.layer_norm(x)
-        #x = self.bottleneck_conv1x1(x)
-
+        x = x.permute(0, 2, 1)
         # tcn blocks
         for i in range(len(self.tcn)):
             x = self.tcn[i](x)
-
-        #x = self.mask_conv1x1(x)
-        x = F.relu(x)
         return x
 
 class TCN_block(nn.Module):
@@ -78,7 +109,7 @@ class Conv1DBlock(nn.Module):
         if causal:
             self.lnorm1 = cLN(conv_channels)
         else:
-            self.lnorm1 = ChannelWiseLayerNorm(conv_channels)
+            self.lnorm1 = GlobalLayerNorm(conv_channels)
         dconv_pad = (dilation * (kernel_size - 1)) // 2 if not causal else (
             dilation * (kernel_size - 1))
         # depthwise conv

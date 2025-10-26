@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class PositionalEncoding(nn.Module):
-
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -66,28 +65,20 @@ class MultiHeadAttention(nn.Module):
         output = self.out_proj(attended_values)
         return output
 
-
-class PreConv(nn.Module):
-    def __init__(self, input_ch, output_ch, kernel_size=3):
-        super(PreConv, self).__init__()
-        self.conv1d = nn.Conv1d(input_ch, output_ch, kernel_size=kernel_size, stride=1, padding='same')
-    
-    def forward(self, x):
-        outputs = F.relu(self.conv1d(x)).permute(0, 2, 1)
-        return outputs
-
 class ADCBlock(nn.Module):
-    def __init__(self, input_ch, num_heads=1, kernel_size=3):
+    def __init__(self, input_ch, num_heads=1, kernel_size=3, dropout=0.1):
         super(ADCBlock, self).__init__()
         self.pos_enc = PositionalEncoding(d_model=input_ch)
         self.mha = MultiHeadAttention(embed_dim=input_ch, num_heads=num_heads)
         self.depth_conv = nn.Conv1d(input_ch, input_ch, kernel_size=kernel_size, stride=1, padding='same', groups=input_ch)
         self.layer_norm = nn.LayerNorm(input_ch)
+        self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x):
         # MHA step
         x = self.pos_enc(x.permute(1, 0, 2))
-        x = self.layer_norm(x + self.mha(x))
+        mha_out = self.mha(x)
+        x = self.layer_norm(x + mha_out)
    
         # Depth Conv step
         x = x.permute(0, 2, 1)  
@@ -96,15 +87,15 @@ class ADCBlock(nn.Module):
         return x
             
 class EEGEncoder(nn.Module):
-    def __init__(self, input_ch, num_heads=2, n_adcblocks=1, kernel_size=10):
+    def __init__(self, input_ch, num_heads=2, n_adcblocks=1, kernel_size=10, dropout=0.1):
         super(EEGEncoder, self).__init__()
-        self.pre_conv = PreConv(input_ch=input_ch, output_ch=input_ch, kernel_size=1)
+        self.pre_conv = nn.Conv1d(input_ch, input_ch, kernel_size=3, stride=1, padding='same')
         self.ADCBlocks = nn.ModuleList()
         for _ in range(n_adcblocks):
-            self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=kernel_size))
+            self.ADCBlocks.append(ADCBlock(input_ch=input_ch, num_heads=num_heads, kernel_size=kernel_size, dropout=dropout))
 
     def forward(self, x):
-        x = self.pre_conv(x)
+        x = F.relu(self.pre_conv(x).permute(0, 2, 1))
         for adc_block in self.ADCBlocks:
             x = adc_block(x)
         return x

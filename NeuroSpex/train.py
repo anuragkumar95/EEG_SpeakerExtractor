@@ -5,9 +5,10 @@ import argparse
 import torch
 from Data.dataset import EEGDataset, NeurHeedEEG_Dataset
 from Models.neurospex import NeuroSpex
-from utils import SISDRLoss, custom_collate_fn
+from utils import SISNRLoss, SISDRLoss, custom_collate_fn
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
+import pytorch_warmup as warmup
 
 ### TODO: Add multi-GPU training.
 
@@ -44,10 +45,18 @@ class Trainer:
                 filter(lambda layer:layer.requires_grad, self.model.parameters()), lr=config["init_lr"]
             )
 
+        # Half lr every 5 epochs
+        LR_HALF_EPOCH=5
+        self.accum_grad = config['accum_grad']
+        HALF_STEP = LR_HALF_EPOCH*len(train_ds)/self.accum_grad
+        WARMUP_STEP = 7500 # Effective warmup steps = 7500 * accum_grad 
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=1, gamma=0.5
+            self.optimizer, step_size=HALF_STEP, gamma=0.5
         )
+        self.scheduler_warmup = warmup.LinearWarmup(self.optimizer, warmup_period=WARMUP_STEP)
+        print(f"Halving LR every {HALF_STEP} steps. Warmup for {WARMUP_STEP} steps.")
 
+        self.start_epoch = 0
         if "resume_pt" in config and config["resume_pt"] is not None:
             self.load(config["resume_pt"])
 
@@ -55,8 +64,7 @@ class Trainer:
         if parallel:
             self.model = DDP(self.model, device_ids=[gpu_id])
        
-        self.loss_fn = SISDRLoss()
-        self.accum_grad = config['accum_grad']
+        self.loss_fn = SISNRLoss() #SISDRLoss()
         self.train_ds = train_ds
         self.val_ds = val_ds
         self.log_wandb = False
@@ -64,6 +72,7 @@ class Trainer:
             self.log_wandb = True
             wandb.login()
             wandb.init(project=config["experiment"], name=config["run_name"])
+        self.prev_epoch = 0
 
     def save(self, checkpoint_path, epoch):
         if self.gpu == 0:
@@ -72,6 +81,7 @@ class Trainer:
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'scheduler_state_dict': self.scheduler.state_dict(),
+                'scheduler_warmup_state_dict': self.scheduler_warmup.state_dict(),
             }, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}")
 
@@ -82,6 +92,16 @@ class Trainer:
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            self.scheduler_warmup.load_state_dict(checkpoint['scheduler_warmup_state_dict'])
+            self.start_epoch = checkpoint['epoch']
+            # Manually set the learning rate to avoid potential issues
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.config["init_lr"]
+            # now individually transfer the optimizer parts...
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(self.gpu)
             print("Checkpoint loaded successfully.")
         else:
             print(f"No checkpoint found at {checkpoint_path}")
@@ -103,6 +123,9 @@ class Trainer:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
         if (step + 1) % self.accum_grad == 0:
             self.optimizer.step()
+            # Adjust LR with warmup
+            with self.scheduler_warmup.dampening():
+                self.scheduler.step()
             self.optimizer.zero_grad()
 
         return loss * self.accum_grad
@@ -131,9 +154,7 @@ class Trainer:
                 
                 loss = self.validate_one_step(step, batch)
                 val_loss += loss.item()
-
                 avg_loss_so_far = val_loss / (step + 1)
-
                 pbar.set_postfix({
                     'Loss': avg_loss_so_far
                 })
@@ -141,19 +162,40 @@ class Trainer:
                 
         avg_val_loss = val_loss / len(self.val_ds)
         return avg_val_loss
+
+    def update_best_model(self, best_val_loss, val_loss, ep, no_improv_counter, NO_IMPROV_STOP_EPOCH):
+        if best_val_loss > val_loss:
+            # Save checkpoint
+            checkpoint_dir = f"{self.config['save_dir']}/{self.config['experiment']}/{self.config['run_name']}"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, f"best_checkpoint.pth")
+            self.save(checkpoint_path, ep+1)
+            best_val_loss = val_loss
+            print(f"New best model saved with validation loss: {best_val_loss:.4f}")
+            no_improv_counter = 0
+        else:
+            # Early stopping
+            if self.prev_epoch != ep:
+                self.prev_epoch = ep
+                no_improv_counter += 1
+                if no_improv_counter % NO_IMPROV_STOP_EPOCH == 0:
+                    print(f"No improvement for {NO_IMPROV_STOP_EPOCH} epochs, stopping training.")
+                    return -1
+     
+        return best_val_loss, no_improv_counter 
         
     def train(self, epochs):
         best_val_loss = float('inf')
         no_improv_counter = 0
-        for ep in range(epochs):
+        NO_IMPROV_STOP_EPOCH = 10
+    
+        for ep in range(self.start_epoch, epochs):
             self.model.train()
             ############################# TRAINING ##############################
             total_loss = 0.0
             step = 0
-            if self.gpu == 0:
-                pbar = tqdm(self.train_ds)
-            else:
-                pbar = self.train_ds
+            pbar = tqdm(self.train_ds)
+            best_ep_val_loss = float('inf')
             for batch in pbar:
                 # Set the right device
                 mixture, target, eeg = batch
@@ -165,62 +207,48 @@ class Trainer:
                 batch = (mixture, target, eeg)
                 loss = self.train_one_step(step, batch)
                 total_loss += loss.item()
-                if self.log_wandb:
-                    wandb.log({
-                        "step": (ep + 1) * len(self.train_ds) + (step+1),
-                        "train/loss": loss.item()
-                    })
 
                 avg_loss_so_far = total_loss / (step + 1)
 
-                if self.gpu == 0:
-                    pbar.set_postfix({
-                        'Epoch': ep + 1,
-                        'Loss': avg_loss_so_far
-                    })
+                pbar.set_postfix({
+                    'Epoch': ep + 1,
+                    'Loss': avg_loss_so_far,
+                    'LR': self.optimizer.param_groups[0]['lr']
+                })
+
+                log_dict = {
+                    "step": (ep + 1) * len(self.train_ds) + (step+1),
+                    "train/loss": loss.item(),
+                    "learning_rate": self.optimizer.param_groups[0]['lr'],
+                }
 
                 if (step+1) % self.config['val_every_step'] == 0:
                     self.model.eval()
                     val_loss = self.validate(ep, step)
-                    if self.log_wandb:
-                        wandb.log({
-                            "step": (ep + 1) * len(self.train_ds) + (step+1),
-                            "val/loss": val_loss
-                        })
+                    if val_loss < best_ep_val_loss:
+                        best_ep_val_loss = val_loss
+                    update = self.update_best_model(best_val_loss, val_loss, ep, no_improv_counter, NO_IMPROV_STOP_EPOCH)
+                    if not isinstance(update, tuple) and update == -1:
+                        print("Early stopping triggered.")
+                        return
+                    best_val_loss, no_improv_counter = update
                     self.model.train()
+                    log_dict["val/loss"] = val_loss
+
+                if self.log_wandb:
+                    wandb.log(log_dict)
+
                 step += 1
             
             avg_loss = total_loss / len(self.train_ds)
             print(f"Epoch [{ep+1}/{epochs}] Training Loss: {avg_loss:.4f}")
-            self.model.eval()
-            val_loss = self.validate(ep, step)
+         
             if self.log_wandb:
                 wandb.log({
-                    "step": (ep + 1) * len(self.train_ds) + (step+1),
                     "train/ep_loss": avg_loss,
+                    "val/loss": best_ep_val_loss,
                     "epoch": ep + 1,
-                    "val/loss": val_loss
                 })
-
-            if best_val_loss > val_loss:
-                # Save checkpoint
-                checkpoint_dir = f"{self.config['save_dir']}/{self.config['experiment']}/{self.config['run_name']}"
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{ep+1}.pth")
-                self.save(checkpoint_path, ep+1)
-                best_val_loss = val_loss
-                print(f"New best model saved with validation loss: {best_val_loss:.4f}")
-                no_improv_counter = 0
-            else:
-                # Early stopping and LR scheduling
-                no_improv_counter += 1
-                if no_improv_counter % 25 == 0:
-                    print("No improvement for 25 epochs, stopping training.")
-                    break
-                elif no_improv_counter % 5 == 0:
-                    self.scheduler.step()
-                    print("No improvement for 5 epochs, reducing learning rate.")
-        
         
 def main(rank, world_size, ARGS):
     if ARGS.parallel:
@@ -244,7 +272,7 @@ def main(rank, world_size, ARGS):
         root=data_config["root"], 
         partition='train', 
         batch_size=train_config["batch_size"],
-        max_length=8, 
+        max_length=10, 
         audio_sr=8000, 
         ref_sr=128)
 
@@ -253,7 +281,7 @@ def main(rank, world_size, ARGS):
         root=data_config["root"], 
         partition='val',
         batch_size=train_config["batch_size"], 
-        max_length=8, 
+        max_length=10, 
         audio_sr=8000, 
         ref_sr=128)
 
@@ -266,9 +294,9 @@ def main(rank, world_size, ARGS):
         train_dataset, 
         #batch_size=train_config["batch_size"], 
         batch_size=1,
-        sampler=DistributedSampler(train_dataset),
-        shuffle=False, 
-        num_workers=train_config["batch_size"],
+        sampler=DistributedSampler(train_dataset) if ARGS.parallel else None,
+        shuffle=True if not ARGS.parallel else False, 
+        num_workers=0 if ARGS.parallel else train_config["batch_size"],
         collate_fn=custom_collate_fn
     )
 
@@ -276,9 +304,9 @@ def main(rank, world_size, ARGS):
         val_dataset, 
         #batch_size=train_config["batch_size"], 
         batch_size=1,
-        sampler=DistributedSampler(val_dataset),
+        sampler=DistributedSampler(val_dataset) if ARGS.parallel else None,
         shuffle=False, 
-        num_workers=train_config["batch_size"],
+        num_workers=0 if ARGS.parallel else train_config["batch_size"],
         collate_fn=custom_collate_fn
     )
 
@@ -311,4 +339,4 @@ if __name__ == "__main__":
     if args.parallel:
         mp.spawn(main, args=(world_size, args), nprocs=world_size)
     else:
-        main(None, world_size, args)
+        main(args.local_rank, world_size, args)

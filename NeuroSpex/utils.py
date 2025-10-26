@@ -61,3 +61,48 @@ class SISDRLoss(torch.nn.Module):
         else:
             losses = losses.sum()
         return -losses
+
+class SISNRLoss(nn.Module):
+    """Scale-Invariant Source-to-Noise Ratio (SI-SNR) Loss
+    Args:
+        zero_mean: bool, whether to perform zero-mean norm
+    """
+
+    def __init__(self, zero_mean=True, eps=1e-8, reduction="mean"):
+        super(SISNRLoss, self).__init__()
+        self.zero_mean = zero_mean
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, estimate_source, source):
+        """Calcuate Scale-Invariant Source-to-Noise Ratio (SI-SNR) Loss
+        Args:
+            source: torch tensor, [batch size, sequence length]
+            estimate_source: torch tensor, [batch size, sequence length]
+        Returns:
+            SI-SNR loss, [batch size]
+        """
+        if len(source.shape) == 3:
+            source = source.squeeze(1)
+        source = source[:, :estimate_source.shape[-1]]
+        assert source.size() == estimate_source.size(),f"Input and target must have the same shape, got {source.shape} and {estimate_source.shape}"
+
+        if self.zero_mean:
+            # Step 1. Zero-mean norm
+            source = source - torch.mean(source, axis = -1, keepdim=True)
+            estimate_source = estimate_source - torch.mean(estimate_source, axis = -1, keepdim=True)
+        # Step 2. SI-SNR
+        # s_target = <s', s>s / ||s||^2
+        ref_energy = torch.sum(source ** 2, axis = -1, keepdim=True) + self.eps
+        proj = torch.sum(source * estimate_source, axis = -1, keepdim=True) * source / ref_energy
+        # e_noise = s' - s_target
+        noise = estimate_source - proj
+        # SI-SNR = 10 * log_10(||s_target||^2 / ||e_noise||^2)
+        ratio = torch.sum(proj ** 2, axis = -1) / (torch.sum(noise ** 2, axis = -1) + self.eps)
+        loss = 10 * torch.log10(ratio + self.eps)
+
+        if self.reduction == "mean":
+            loss = loss.mean()
+        else:
+            loss = loss.sum()
+        return -loss

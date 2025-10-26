@@ -1,14 +1,15 @@
 {
     "train": {
-        "batch_size":16,
-        "accum_grad": 1,
-        "epochs": 3,
+        "batch_size":8,
+        "accum_grad": 2,
+        "epochs": 25,
         "init_lr": 0.0001,
         "experiment": "neurospex_baseline",
-        "run_name": "debug", 
+        "run_name": "neurospex_tcn(neuroheed_split)_preconv_k_5", 
         "save_dir": "./checkpoints",
-        "gpu": 0,
-        "val_every_step": 500,
+        "resume_pt": null,
+        "gpu":0,
+        "val_every_step": 2000,
         "speech_encoder_params":{
             "input_ch":1,
             "output_ch":256,
@@ -18,9 +19,10 @@
         },
         "eeg_encoder_params":{
             "input_ch":64,
-            "num_heads":1,
-            "n_adcblocks":1,
-            "apply_rope": true
+            "num_heads":2,
+            "n_adcblocks":6,
+            "kernel_size":10,
+            "dropout":0.1
         },
         "speech_decoder_params":{
             "input_ch":256,
@@ -30,7 +32,7 @@
         "spk_ext_params":{
             "eeg_ch":64,
             "speech_ch":256,
-            "tcn_channels":512,
+            "tcn_channels":128,
             "n_ca_blocks":1, 
             "n_ca_heads":1, 
             "n_tcn_layers":3, 
@@ -40,6 +42,6 @@
         }
     },
     "data": {
-        "root": "/fs/scratch/PAS2301/kumar1109/KUL-Mix"
+        "root": "/fs/scratch/PAS2301/kumar1109/KUL_eeg"
     }
 }
