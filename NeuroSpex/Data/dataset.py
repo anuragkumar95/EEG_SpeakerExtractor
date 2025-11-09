@@ -10,21 +10,21 @@ import pickle
 from torch.utils.data import Dataset
 
 class NeurHeedEEG_Dataset(Dataset):
-    def __init__(self, root, batch_size=16, partition='train', max_length=10, audio_sr=8000, ref_sr=128):
+    def __init__(self, root, batch_size=16, partition='train', max_length=10, audio_sr=8000, ref_sr=128, split='neuroheed'):
         self.minibatch =[]
-        #self.args = args
         self.partition = partition
         self.max_length = max_length
         self.audio_sr=audio_sr
         self.ref_sr=ref_sr
-        #self.speaker_no=args.speaker_no
         self.batch_size=batch_size
 
         #self.mix_lst_path = args.mix_lst_path
-        self.mix_lst_path = f"{root}/mixture_data_list_2mix.csv"
-        #self.audio_direc = args.audio_direc
-        self.audio_direc = f"{root}/audio_8k/"
-        #self.eeg_direc = args.reference_direc
+        if split == 'neuroheed':
+            self.mix_lst_path = f"{root}/mixture_data_list_2mix.csv"
+        elif split == 'neurospex':
+            self.mix_lst_path = f"{root}/mixture_data_list_split_across_trial_different_speakers_uniform_pairs.csv"
+      
+        self.audio_direc = f"{root}/audio_8k/"  
         self.eeg_direc = f"{root}/eeg/"
         
         mix_lst=open(self.mix_lst_path).read().splitlines()
@@ -83,12 +83,14 @@ class NeurHeedEEG_Dataset(Dataset):
             end = start + min_length_audio
             a_int, _ = sf.read(int_audio_path, start=int(start), stop=int(end), dtype='float32')
 
+            snr = float(line[8])
+            
             # training snr augmentation
-            if float(line[8]) != 0:
+            if snr != 0:
                 target_power = np.linalg.norm(a_tgt, 2)**2 / a_tgt.size
                 intef_power = np.linalg.norm(a_int, 2)**2 / a_int.size
                 a_int *= np.sqrt(target_power/intef_power)
-                snr_1 = (10**(float(line[8])/20))
+                snr_1 = (10**(snr)/20)
 
                 max_snr = max(1, snr_1)
                 a_tgt /= max_snr

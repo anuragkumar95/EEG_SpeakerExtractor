@@ -1,0 +1,11 @@
+v4 additions:
+* EEG-Encoder:
+    1. Replace LN after DepthConv with GroupNorm. LN dilutes/smooths information across channel which results in worse encoding of EEG especially since EEG signals are sensetive across channels. 
+
+* Spk-Separator:
+    1. Speech query serves as the better configuration. The current architecture is comparable to Transformer Encoder Decoder Architecture where eeg embedding can be considered as speech embedding.
+    2. Added residual connections globally over TCN module at every level.
+    3. Added a GlobalLN after every TCN block.
+
+# Speech Encoder:
+    1. Add positional encoding to speech features.

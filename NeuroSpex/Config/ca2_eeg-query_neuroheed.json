@@ -1,15 +1,18 @@
 {
     "train": {
-        "batch_size":8,
-        "accum_grad": 2,
-        "epochs": 100,
-        "init_lr": 0.0001,
+        "batch_size":24,
+        "accum_grad": 1,
+        "epochs": 150,
+        "init_lr": 0.00005,
         "experiment": "neurospex_baseline",
-        "run_name": "neurospex_tcn(neuroheed_split)_v3_1cablocks_speech_query", 
+        "run_name": "neurospex_tcn(neuroheed_split)_v4_1cablocks_(speech_query)", 
         "save_dir": "./checkpoints",
         "resume_pt": null,
         "gpu":0,
+        "speech_query": true,
         "val_every_step": 2000,
+        "early_stop":false,
+        "lr_halving":true,
         "speech_encoder_params":{
             "input_ch":1,
             "output_ch":256,
@@ -43,6 +46,7 @@
         }
     },
     "data": {
-        "root": "/fs/scratch/PAS2301/kumar1109/KUL_eeg"
+        "root": "/fs/scratch/PAS2301/kumar1109/KUL_eeg",
+        "ds": "neuroheed"
     }
 }

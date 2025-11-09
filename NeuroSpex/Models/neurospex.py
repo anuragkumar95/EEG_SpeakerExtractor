@@ -25,7 +25,7 @@ class NeuroSpex(nn.Module):
         self.speaker_extractor = SpeakerExtractor( **spk_ext_params )
    
 
-    def forward(self, speech, eeg):
+    def forward(self, speech, eeg, speech_query=False):
         """
         speech : (batch, 1, T_x)
         eeg : (batch, 64, T_y)
@@ -35,7 +35,7 @@ class NeuroSpex(nn.Module):
         speech_emb = self.speech_encoder(speech).permute(0, 2, 1)
         
         # Get speaker mask
-        mask = self.speaker_extractor(speech_emb, eeg_emb)
+        mask = self.speaker_extractor(speech_emb, eeg_emb, speech_query)
         spk_out = mask * speech_emb
 
         # Decode

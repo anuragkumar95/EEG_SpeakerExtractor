@@ -51,7 +51,7 @@ class GlobalLayerNorm(nn.Module):
             x = (x-mean)/torch.sqrt(var+self.eps)
         return x
 
-class Separator(nn.Module):
+class TCN_Stack(nn.Module):
     '''
        ConvTasNet module
        N	Number of ﬁlters in autoencoder
@@ -63,19 +63,20 @@ class Separator(nn.Module):
        R	Number of repeats
     '''
     def __init__(self, N=64, B=64, H=512, P=8, X=4, R=3, causal=False):
-        super(Separator, self).__init__()
+        super().__init__()
         if causal:
             self.layer_norm = cLN(N)
         else:
-            self.layer_norm = ChannelWiseLayerNorm(N)
-            #self.layer_norm = GlobalLayerNorm(N)
+            #self.layer_norm = ChannelWiseLayerNorm(N)
+            self.layer_norm = GlobalLayerNorm(N)
         self.tcn = _clones(TCN_block(X,P,B,H,causal), R)
       
     def forward(self, x):
+        #x = self.layer_norm(x.permute(0, 2, 1))
         x = x.permute(0, 2, 1)
         # tcn blocks
         for i in range(len(self.tcn)):
-            x = self.tcn[i](x)
+            x = self.layer_norm(x + self.tcn[i](x))
         return x
 
 class TCN_block(nn.Module):
@@ -87,7 +88,7 @@ class TCN_block(nn.Module):
         self.tcn = nn.Sequential(*tcn_blocks)
 
     def forward(self, x):
-        x = self.tcn(x)
+        x = x + self.tcn(x)
         return x
 
 class Conv1DBlock(nn.Module):
@@ -95,13 +96,13 @@ class Conv1DBlock(nn.Module):
     1D convolutional block:
         Conv1x1 - PReLU - Norm - DConv - PReLU - Norm - SConv
     """
-
-    def __init__(self,
-                 in_channels=256,
-                 conv_channels=512,
-                 kernel_size=3,
-                 dilation=1,
-                 causal=False):
+    def __init__(
+        self,
+        in_channels=256,
+        conv_channels=512,
+        kernel_size=3,
+        dilation=1,
+        causal=False):
         super(Conv1DBlock, self).__init__()
         # 1x1 conv
         self.conv1x1 = nn.Conv1d(in_channels, conv_channels, 1)
