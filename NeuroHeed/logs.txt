@@ -1,0 +1,4 @@
+rnn: NeuroHeed + dualPathRNN
+tcn: NeuroHeed + TCN + (eeg, speech) fusion once before TCN blocks
+tcn_2: NeuroHeed + TCN + (eeg, speech) fusion once before every TCN block, TCN output is considered as the new speech feature.
+tcn_3: NeuroHeed + TCN + (eeg, speech) fusion once before every TCN block, TCN output is considered as the new eeg feature.

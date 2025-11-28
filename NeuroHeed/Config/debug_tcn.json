@@ -1,0 +1,31 @@
+{
+    "train": {
+        "batch_size":32,
+        "accum_grad": 1,
+        "epochs": 150,
+        "init_lr": 0.0001,
+        "experiment": "neurospex_baseline",
+        "run_name": "neuroheed_tcn_v4_H256_R3_run2", 
+        "save_dir": "./checkpoints",
+        "resume_pt": null,
+        "gpu": 0,
+        "val_every_step": 5000,
+        "early_stop":true,
+        "lr_halving":true,
+        "neuroheed_params":{
+            "N":256, 
+            "L":20, 
+            "B":64, 
+            "H":256, 
+            "K":100, 
+            "R":3,
+            "tcn_separator": true
+        }
+    },
+    "data": {
+        "root": "/fs/scratch/PAS2301/kumar1109/KUL_eeg",
+        "max_length": 10
+    }
+}
+
+ 
